@@ -1,0 +1,53 @@
+---
+title: "Sadelik Bir Lüks Değil, Bir Strateji"
+description: "Yazılımda karmaşıklık birikir, sadelik ise inşa edilir. Uzun vadeli bakım kolaylığını her zaman kısa vadeli zeka gösterisinin önünde tutmamın nedenleri."
+date: "2026-02-25"
+tags: ["Yazılım Felsefesi", "Mimari"]
+featured: false
+---
+
+Kariyerimin başında "akıllı" kod yazmayı severdim. Tek satıra sıkıştırılmış,
+zarif görünen ama altı ay sonra kendimin bile anlamadığı çözümler. Zamanla
+öğrendim ki gerçek ustalık karmaşık problemleri **basit** çözümlere
+indirgeyebilmekte.
+
+## Karmaşıklık varsayılan durumdur
+
+Hiç kimse "şu sistemi olabildiğince karmaşık yapalım" demez. Karmaşıklık,
+alınan küçük kararların toplamı olarak kendiliğinden birikir. Bu yüzden
+sadelik aktif bir çaba gerektirir; varsayılan değildir.
+
+## Gelecekteki sen, bir yabancıdır
+
+Bugün yazdığınız kodu altı ay sonra okuyacak kişi, pratikte bir yabancıdır.
+O yabancıya kolaylık sağlamak, en az takım arkadaşlarınıza sağladığınız kadar
+önemlidir:
+
+```ts
+// "akıllı" ama okunması zor
+const r = u.filter(x => x.a && !x.d).map(x => x.e);
+
+// sade ve niyeti açık
+const activeEmails = users
+  .filter((user) => user.isActive && !user.isDeleted)
+  .map((user) => user.email);
+```
+
+İkisi de aynı işi yapar. Ama biri niyetini gizler, diğeri anlatır.
+
+## Soyutlamayı erken yapma
+
+DRY ilkesi sıklıkla yanlış anlaşılır. İki kod parçası birbirine benziyor diye
+hemen soyutlamak, çoğu zaman yanlış soyutlamalar üretir. Erken bir soyutlama,
+tekrar eden koddan çok daha pahalıdır.
+
+> Yanlış soyutlama, kopyala-yapıştırdan daha maliyetlidir.
+
+## Sürdürülebilirlik bir özelliktir
+
+Bir özelliği ne kadar hızlı eklediğiniz değil, altı ay sonra ona ne kadar
+güvenle dokunabildiğiniz önemlidir. Sade kod; daha az hata, daha hızlı
+onboarding ve daha rahat refactor demektir.
+
+Sadelik naiflik değildir. Tam tersine, bir problemi yeterince derin anlamadan
+ulaşılamayan bir olgunluktur.

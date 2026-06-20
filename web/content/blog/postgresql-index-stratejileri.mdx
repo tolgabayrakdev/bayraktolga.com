@@ -1,0 +1,65 @@
+---
+title: "PostgreSQL'de Index Stratejileri ve Performans"
+description: "Yavaş sorguların çoğu kötü index kararlarından kaynaklanır. PostgreSQL'de B-Tree, partial ve composite index'lerin ne zaman kullanılacağına ve EXPLAIN ANALYZE ile darboğazların nasıl bulunacağına dair pratik bir rehber."
+date: "2026-04-02"
+tags: ["PostgreSQL", "Performans", "Veritabanı"]
+featured: true
+---
+
+Bir uygulama yavaşladığında ilk şüphelendiğim yer neredeyse her zaman
+veritabanıdır. Ve veritabanı problemlerinin büyük kısmı, eksik ya da yanlış
+kurgulanmış index'lerden kaynaklanır. Bu yazıda PostgreSQL'de günlük olarak
+kullandığım index stratejilerini topluyorum.
+
+## Önce ölç: EXPLAIN ANALYZE
+
+Tahmin etmek yerine ölçmek gerekir. Bir sorgunun gerçekte nasıl çalıştığını
+görmenin en doğrudan yolu:
+
+```sql
+EXPLAIN ANALYZE
+SELECT * FROM orders
+WHERE user_id = 42 AND status = 'paid'
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+Çıktıda `Seq Scan` görüyorsanız ve tablo büyükse, bu çoğu zaman eksik bir
+index'in işaretidir.
+
+## Composite index'lerde sıralama önemli
+
+Birden fazla kolona göre filtreliyorsanız, composite index'teki kolon sırası
+sorgunun verimini belirler. Yukarıdaki sorgu için doğru index şudur:
+
+```sql
+CREATE INDEX idx_orders_user_status_created
+ON orders (user_id, status, created_at DESC);
+```
+
+Eşitlik filtreleri (`user_id`, `status`) önce, sıralama kolonu (`created_at`)
+sona gelir. Bu "en soldan eşleşme" kuralı, index'in hem filtre hem sıralama
+için kullanılmasını sağlar.
+
+## Partial index ile gereksiz yükten kurtul
+
+Sorgularınız genelde verinin küçük bir alt kümesine odaklanıyorsa, partial
+index hem yer hem de yazma maliyetini düşürür:
+
+```sql
+CREATE INDEX idx_active_users ON users (email)
+WHERE deleted_at IS NULL;
+```
+
+## Her şeyi index'lemek bir çözüm değil
+
+Index'ler okumayı hızlandırırken yazmayı yavaşlatır ve disk kaplar. Her
+kolona index eklemek, write-heavy bir sistemde performansı düşürebilir.
+Doğru yaklaşım, gerçek sorgu desenlerini gözlemleyip yalnızca ihtiyaç
+duyulan index'leri eklemektir.
+
+> Performans optimizasyonu bir tahmin oyunu değildir. Ölç, bir şeyi değiştir,
+> tekrar ölç.
+
+Veritabanı, çoğu web uygulamasının en kritik darboğazıdır. Index'leri bilinçli
+yönetmek, ölçeklenirken karşılaşacağınız sorunların çoğunu daha baştan önler.

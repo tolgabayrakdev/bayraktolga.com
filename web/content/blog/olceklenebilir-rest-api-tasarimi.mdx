@@ -1,0 +1,67 @@
+---
+title: "Ölçeklenebilir REST API Tasarımının Temelleri"
+description: "Node.js ve Express.js ile büyümeye hazır, sürdürülebilir REST API'ler tasarlarken dikkat ettiğim ilkeler: katmanlı mimari, tutarlı hata yönetimi, versiyonlama ve doğru veritabanı modelleme."
+date: "2026-05-18"
+tags: ["Node.js", "API Tasarımı", "Mimari"]
+featured: true
+---
+
+İyi bir API, kullanıcısının onu düşünmek zorunda kalmadığı API'dir. Yıllar içinde
+fark ettim ki ölçeklenebilirlik çoğu zaman bir altyapı problemi değil, bir
+**tasarım disiplini** problemi. Bu yazıda Node.js ve Express.js ile API
+geliştirirken takip ettiğim temel ilkeleri paylaşıyorum.
+
+## Katmanlı mimariye sadık kal
+
+Controller'ın içine iş mantığı yazmak, küçük projelerde hızlı ama orta vadede
+borç biriktirir. Sorumlulukları net katmanlara ayırmak, test edilebilirliği ve
+bakımı dramatik şekilde kolaylaştırır:
+
+```ts
+// routes -> controller -> service -> repository
+export async function createUser(req: Request, res: Response) {
+  const dto = createUserSchema.parse(req.body);
+  const user = await userService.create(dto);
+  return res.status(201).json({ data: user });
+}
+```
+
+Controller yalnızca HTTP ile ilgilenir; iş kuralları `service` katmanında,
+veritabanı erişimi `repository` katmanında yaşar. Bu ayrım sayesinde bir gün
+PostgreSQL'den başka bir kaynağa geçsem bile controller'a dokunmam gerekmez.
+
+## Hataları tahmin edilebilir kıl
+
+Tutarsız hata yanıtları, bir API'yi tüketen geliştirici için kâbustur. Tek bir
+hata formatı belirleyip her yerde ona sadık kalmak gerekir:
+
+```json
+{
+  "error": {
+    "code": "USER_NOT_FOUND",
+    "message": "Kullanıcı bulunamadı"
+  }
+}
+```
+
+Merkezi bir hata middleware'i ile tüm beklenmeyen durumları yakalayıp
+loglamak, hem güvenliği hem de gözlemlenebilirliği artırır.
+
+## Versiyonlamayı ertelemenin bedeli
+
+API'yi yayına almadan önce `/v1` ile başlamak, ileride geriye dönük uyumluluğu
+kırmadan evrilebilmenin en ucuz yoludur. Sonradan eklemek her zaman daha
+pahalıdır.
+
+> Sadelik bir özellik değil, bir karardır. Her endpoint'i eklemeden önce
+> "bu gerçekten gerekli mi?" diye sormak, API yüzeyini küçük ve yönetilebilir
+> tutar.
+
+## Veritabanı modellemeyi sona bırakma
+
+Ölçeklenebilirliğin büyük kısmı doğru index'ler ve normalize edilmiş bir şema
+ile başlar. API tasarımıyla veri modelini birlikte düşünmek, ileride pahalı
+migration'lardan kurtarır.
+
+Bu ilkeler sihirli değil; sadece **disiplin**. Ama uzun vadede bir projenin
+sürdürülebilirliğini belirleyen şey tam olarak bu küçük, tutarlı kararlardır.
