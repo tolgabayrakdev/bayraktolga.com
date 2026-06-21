@@ -6,6 +6,7 @@ import { siteConfig } from "@/lib/config";
 const navItems = [
   { href: "/#hakkimda", label: "Hakkımda" },
   { href: "/#yetenekler", label: "Yetenekler" },
+  { href: "/#projeler", label: "Projeler" },
   { href: "/blog", label: "Blog" },
   { href: "/#iletisim", label: "İletişim" },
 ];

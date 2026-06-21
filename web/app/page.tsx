@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { siteConfig } from "@/lib/config";
 import { getAllPostsMeta } from "@/lib/posts";
+import { projects } from "@/lib/projects";
 import { PostCard } from "@/components/post-card";
+import { ProjectCard } from "@/components/project-card";
 import {
   ArrowRightIcon,
   GitHubIcon,
@@ -247,11 +249,25 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Projeler */}
+      <section id="projeler" className="mx-auto max-w-3xl scroll-mt-20 px-6 py-20">
+        <SectionTitle index="03" title="Projeler" />
+        <p className="mt-8 max-w-xl text-lg leading-relaxed text-muted">
+          Gerçek dünya problemlerine çözüm üreten, uçtan uca tasarlayıp geliştirdiğim
+          ürünler.
+        </p>
+        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+          {projects.map((project) => (
+            <ProjectCard key={project.domain} project={project} />
+          ))}
+        </div>
+      </section>
+
       {/* Öne çıkan yazılar */}
       {featured.length > 0 && (
         <section className="mx-auto max-w-3xl px-6 py-20">
           <div className="flex items-end justify-between">
-            <SectionTitle index="03" title="Son yazılar" />
+            <SectionTitle index="04" title="Son yazılar" />
             <Link
               href="/blog"
               className="group inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-foreground"
@@ -274,7 +290,7 @@ export default function Home() {
 
       {/* İletişim */}
       <section id="iletisim" className="mx-auto max-w-3xl scroll-mt-20 px-6 py-20">
-        <SectionTitle index="04" title="İletişim" />
+        <SectionTitle index="05" title="İletişim" />
         <p className="mt-8 max-w-xl text-lg leading-relaxed text-muted">
           Bir proje fikrin mi var, yoksa sadece merhaba mı demek istiyorsun? Bana
           aşağıdaki kanallardan ulaşabilirsin.
