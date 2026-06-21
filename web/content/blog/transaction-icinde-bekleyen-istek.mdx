@@ -1,0 +1,186 @@
+---
+title: "Ödeme Endpoint'ini Kilitleyen O Tek Satır"
+description: "Bir abonelik projesinde ödeme isteği ara sıra 30 saniye askıda kalıyordu. Suçlu ödeme sağlayıcısı değil, transaction'ın içinde beklettiğim tek bir HTTP çağrısıydı. idle in transaction'ın peşine düşüşümü ve çıkardığım dersi anlatıyorum."
+date: "2026-06-21"
+tags: ["PostgreSQL", "Node.js", "Debugging"]
+featured: true
+---
+
+Bir süre önce üzerinde çalıştığım küçük bir abonelik (subscription) projesinde,
+başta hiç anlam veremediğim bir sorunla karşılaştım. Abone olma akışı çoğu zaman
+sorunsuz çalışıyordu; ama ara sıra ödeme isteği yaklaşık 30 saniye askıda kalıp
+timeout'a düşüyordu. İlk başta "kullanıcının interneti kötüdür" deyip geçtim.
+
+Sonra fark ettim ki bu, birkaç kullanıcı neredeyse aynı anda abonelik başlatmaya
+çalıştığında oluyordu. Üstelik takılan sadece ödeme de değildi — o anlarda plan
+listesi, hesap sayfası, ne varsa hepsi birlikte yavaşlıyordu. Tek bir akışta
+başlayan bir şey, bir şekilde tüm uygulamayı aşağı çekiyordu.
+
+Bu yazı, o sorunun peşine nasıl düştüğümü, başta neyi yanlış aradığımı ve gerçek
+suçlunun nasıl kodun en masum görünen satırı olduğunu anlatıyor.
+
+## Yanlış yere bakmak
+
+İlk şüphem ödeme sağlayıcısı oldu. Mantıklıydı da: sorun ödeme akışında ortaya
+çıkıyordu, demek ki sağlayıcı ara sıra yavaşlıyordu. "Onların tarafı takılınca
+bizimki de bekliyor" demek kolaydı.
+
+Önce çağrıya timeout koydum, başarısız olanlar için de retry ekledim. Ama retry
+ekledikten sonra durum **daha da kötüleşti.** Aynı anda birden fazla kullanıcı
+denk geldiğinde sistem eskisinden daha hızlı tıkanıyordu. İşte o an, yanlış yöne
+baktığımı anladım.
+
+Çünkü retry asıl problemi azaltmamış, aynı pahalı işlemi bir kez daha tetikleyip
+durumu büyütmüştü.
+
+## "idle in transaction"
+
+Asıl dönüm noktası, tahmin etmeyi bırakıp veritabanına doğrudan sorduğum an oldu.
+Uygulama loglarına bakmak yerine PostgreSQL'in o anda ne yaptığına baktım:
+
+```sql
+SELECT pid,
+       state,
+       now() - state_change AS suredir,
+       wait_event_type,
+       left(query, 60) AS son_sorgu
+FROM pg_stat_activity
+WHERE state IS DISTINCT FROM 'idle'
+ORDER BY suredir DESC;
+```
+
+Çıktı buz gibi soğuktu. Bağlantıların neredeyse tamamı şu durumdaydı:
+
+```text
+ pid  |        state        |    suredir      | son_sorgu
+------+---------------------+-----------------+----------------------------------
+ 8123 | idle in transaction | 00:00:27.41     | UPDATE subscriptions SET status ...
+ 8124 | idle in transaction | 00:00:24.88     | UPDATE subscriptions SET status ...
+ 8131 | idle in transaction | 00:00:22.10     | INSERT INTO subscriptions (...) ...
+ ...
+```
+
+`idle in transaction`. Yani bağlantı bir transaction açmış, bir sorgu çalıştırmış
+ve sonra **27 saniyedir hiçbir şey yapmadan** o transaction'ı açık tutuyordu.
+Bağlantı meşgul değildi; bekliyordu. Ama açık bir transaction tuttuğu için ne
+serbest bırakılabiliyor ne de bağlantı havuzuna geri dönebiliyordu.
+
+Bağlantı havuzumuz `pg` ile kurulmuştu ve `max` değerini hiç değiştirmediğim için
+varsayılan olan 10'daydı. Yani aynı anda en fazla 10 bağlantı. Birkaç kullanıcı
+aynı anda bu "27 saniye bekle" durumuna girdiğinde havuz hızla tükeniyordu. Sonraki
+istek — ister ödeme olsun ister plan listesi — havuzdan boş bağlantı bulamayıp
+bekliyor, sonunda timeout'a düşüyordu. Tüm uygulamanın birlikte yavaşlamasının
+sebebi buydu: her endpoint aynı tek havuzu paylaşıyordu.
+
+## Kök neden: dış çağrıyı transaction'ın içinde beklemek
+
+Geriye `son_sorgu`'daki o `UPDATE subscriptions` ile kodu eşleştirmek kaldı.
+Abonelik handler'ı kabaca şöyleydi:
+
+```js
+const client = await pool.connect();
+try {
+  await client.query("BEGIN");
+
+  const { rows } = await client.query(
+    "INSERT INTO subscriptions (user_id, plan_id, status) VALUES ($1, $2, 'pending') RETURNING id",
+    [userId, planId]
+  );
+  const subscriptionId = rows[0].id;
+
+  // Sorun tam burada:
+  const result = await chargeProvider(subscriptionId, amount); // 0.5s — bazen 28s
+
+  await client.query(
+    "UPDATE subscriptions SET status = $1 WHERE id = $2",
+    [result.ok ? "active" : "failed", subscriptionId]
+  );
+
+  await client.query("COMMIT");
+} finally {
+  client.release();
+}
+```
+
+Tek başına okununca son derece makul görünüyor: aboneliği aç, ödemeyi al, sonucu
+yaz, hepsi atomik. Sorun da zaten "atomik olsun" iyi niyetinden doğuyor.
+
+`chargeProvider`, ağ üzerinden başka bir servise gidiyor. Normal zamanlarda
+yarım saniyede dönüyordu, o yüzden geliştirme sırasında hiç göze batmamıştı. Ama
+sağlayıcı bir an için yavaşlayıp çağrı 25-28 saniyeye çıktığında, o süre boyunca
+`BEGIN` ile `COMMIT` arasında olduğumuz için:
+
+- Veritabanı bağlantısı tüm bu süre boyunca elimizde tutuldu, havuza dönmedi.
+- `subscriptions` satırı üzerindeki kilit 28 saniye boyunca açık kaldı.
+- Sağlayıcı ne kadar yavaşlarsa, bağlantılar o kadar uzun tutuldu ve havuz o kadar
+  hızlı tükendi.
+
+Yani sağlayıcının yavaşlaması gerçek tetikleyiciydi, ama felaketi büyüten bizim
+kodumuzdu. Onların 28 saniyesini, **kendi veritabanımızın 28 saniyesine**
+çevirmiştik. Retry eklemek de bu yüzden işi kötüleştirmişti: yavaş çağrıyı bir
+kez daha, bir bağlantıyı bir kez daha aynı tuzağa sokarak tekrarlıyordu.
+
+## Kuralı söyle: transaction içinde kontrol etmediğin hiçbir şeyi bekleme
+
+Bu projeden sonra kendime koyduğum kural şu oldu: bir transaction olabildiğince
+kısa olmalı ve içinde **kontrol etmediğin hiçbir şeyi** — ağ çağrısını, üçüncü
+parti API'yi, kullanıcı girdisi beklemeyi — `await` etmemelisin. Transaction'a
+girdiğin an bir kaynağı (bağlantıyı, kilidi) rehin alıyorsun; onu mümkün olan en
+kısa sürede geri vermek zorundasın.
+
+Çözüm, tek bir büyük "atomik" işlemi üç parçaya ayırmaktı:
+
+```js
+// 1) Kısa transaction'a bile gerek yok: pending aboneliği yaz ve hemen bırak.
+const { rows } = await pool.query(
+  "INSERT INTO subscriptions (user_id, plan_id, status) VALUES ($1, $2, 'pending') RETURNING id",
+  [userId, planId]
+);
+const subscriptionId = rows[0].id;
+
+// 2) Dış çağrı, hiçbir transaction açık değilken yapılır.
+//    Sağlayıcı 28 saniye sürse bile artık tek bir DB bağlantısını tutmuyor.
+const result = await chargeProvider(subscriptionId, amount);
+
+// 3) Sonucu yazmak için ikinci, yine çok kısa bir sorgu.
+await pool.query(
+  "UPDATE subscriptions SET status = $1, provider_ref = $2 WHERE id = $3",
+  [result.ok ? "active" : "failed", result.ref, subscriptionId]
+);
+```
+
+"Peki ya 2. adımdan sonra sunucu çökerse, abonelik sonsuza dek `pending` mi kalır?"
+Evet, kalabilir — ve bu artık çözebileceğimiz türden bir problem. Cevabı,
+sağlayıcıdan gelen referansla `pending` abonelikleri periyodik olarak uzlaştıran
+(reconciliation) bir job. "Her şey aynı anda ya olur ya olmaz" diye kurguladığın
+o tek dev transaction ise, çöktüğünde sana bunu yapma şansı bile vermiyordu.
+
+## Bir de güvenlik ağı
+
+Kod düzeldi ama bir daha aynı desenin sessizce sızmaması için veritabanı tarafına
+bir de "ölü adam fitili" koydum. PostgreSQL, bir bağlantı belirli bir süre
+`idle in transaction` kalırsa onu kendisi sonlandırabilir:
+
+```sql
+ALTER ROLE app_user SET idle_in_transaction_session_timeout = '15s';
+```
+
+Bu, problemi çözmez — kötü kod hâlâ kötüdür — ama bir daha böyle bir desen
+gelirse tüm sistemi kilitlemeden önce o tek bağlantıyı patlatır. Hata, tüm
+uygulamayı boğmak yerine tek bir isteğin logunda gürültü yapar. Sessiz felaket
+yerine gürültülü bir uyarı; her zaman tercihim budur.
+
+## Geriye kalan
+
+Bu hatanın asıl dersi PostgreSQL'le ilgili değildi aslında. Mesele şuydu:
+"atomik olsun, garanti olsun" demek her zaman daha güvenli kod yazmak anlamına
+gelmiyor. Bazen bir işlemi yapay olarak tek parça tutmaya çalışmak, o parçanın
+içine kontrol edemediğin bir dünyayı — yavaş bir API'yi, kararsız bir ağı —
+davet ediyor.
+
+İyi sınırlar koymak, her şeyi tek bir sınırın içine tıkmaktan daha değerli.
+Transaction'lar da tam olarak bir sınırdır: ne kadar dar tutarsan, o kadar az
+şeyi rehin alırsın.
+
+> Bir transaction yazarken kendine sor: bu `await` satırı en kötü ihtimalle ne
+> kadar sürebilir? Cevabını bilmiyorsan, o satır transaction'ın içinde olmamalı.
